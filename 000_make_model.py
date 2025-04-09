@@ -83,3 +83,5 @@ plt.plot(aper.s, aper.y_aper_high, 'r-')
 plt.plot(aper.s, aper.y_aper_low_discrete, '.r')
 plt.plot(aper.s, aper.y_aper_high_discrete, '.r')
 plt.show()
+
+line.to_json('lhcb1_aper.json')
