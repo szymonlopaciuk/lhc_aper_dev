@@ -3,6 +3,14 @@ import numpy as np
 import pyvista as pv
 from scipy.spatial.transform import Rotation
 
+# Options
+# =======
+element_around = 'ip5'
+section_length = 135
+
+
+# Prepare the lattice and plot the beam
+# =====================================
 env = xt.load_madx_lattice(file='EYETS 2024-2025.seq', reverse_lines=['lhcb2'])
 
 env.lhcb1.particle_ref = xt.Particles(p0c=6.8e12)
@@ -10,6 +18,15 @@ env.lhcb2.particle_ref = xt.Particles(p0c=6.8e12)
 
 env.vars.load_madx('ats_30cm.madx')
 env['on_sep5'] = 0
+
+def cut_around(line, where, length, resolution):
+    s_around = line.get_table().rows[where].s[0]
+    s_start, s_end = s_around - length / 2, s_around + length / 2
+    cuts = np.linspace(s_start, s_end, resolution)
+    line.cut_at_s(cuts, s_tol=0.01)
+
+cut_around(env.lhcb1, element_around, section_length, 200)
+cut_around(env.lhcb2, element_around, section_length, 200)
 
 tw1 = env.lhcb1.twiss4d()
 tw2 = env.lhcb2.twiss4d(reverse=True)
@@ -97,7 +114,7 @@ def mesh_from_polygons(pts, close=True):
     return surface
 
 
-def plot_beam_size(ax, twiss, survey, color, element_around, section_length):
+def plot_beam_size(ax, twiss, survey, color, element_around, section_length, scale=1e3):
     s_around = twiss.rows[element_around].s[0]
     s_start, s_end = s_around - section_length / 2, s_around + section_length / 2
 
@@ -105,10 +122,11 @@ def plot_beam_size(ax, twiss, survey, color, element_around, section_length):
     tw = twiss.rows[s_start:s_end:'s']
 
     s, x, sigx, y, sigy, sx, sy, sz, theta = compute_beam_size(sv, tw)
+    min_len = min(len(x), len(theta))  # these can be off by one due to numerical precision??
 
     pts = np.array([
-        ellipse(sigx[i], sigy[i], x[i], y[i], sx[i], sz[i], sy[i], theta[i])
-        for i in range(len(sigx))
+        ellipse(sigx[i] * scale, sigy[i] * scale, x[i] * scale, y[i] * scale, sx[i], sz[i], sy[i], theta[i])
+        for i in range(min_len)
     ])
 
     # Plot the envelopes
@@ -117,9 +135,9 @@ def plot_beam_size(ax, twiss, survey, color, element_around, section_length):
 
     # Plot the closed orbit
     center = np.column_stack([
-        sx + np.cos(theta) * x,
-        sz + np.sin(theta) * x,
-        sy + y,
+        sx[:min_len] + np.cos(theta[:min_len]) * x[:min_len] * scale,
+        sz[:min_len] + np.sin(theta[:min_len]) * x[:min_len] * scale,
+        sy[:min_len] + y[:min_len] * scale,
     ])
     spline = pv.Spline(center)
     ax.add_mesh(spline, color=color, line_width=5)
@@ -155,28 +173,28 @@ def make_screen(xs, ys, x, y, z, theta):
     return points_xz + np.tile([x, y, z], (len(points_xz), 1))
 
 
-def plot_apertures(ax, apertures, twiss, survey, name_from, name_until):
+def plot_apertures(ax, apertures, survey, name_from, name_until, close=True, scale=1e3):
     sv = survey.rows[name_from:name_until]
     ap = apertures.rows[name_from:name_until]
-    tw = twiss.rows[name_from:name_until]
 
-    s, x, sigx, y, sigy, sx, sy, sz, theta = compute_beam_size(sv, tw)
+    sx = sv.X
+    sy = sv.Y
+    sz = sv.Z
+    theta = sv.theta
 
     xs, ys = ap.polygon_x_discrete, ap.polygon_y_discrete
 
-    # Broken for whatever reason
-    aper_indices = np.where(~np.isnan(xs))[0]
+    aper_indices = np.where(ap.aperture_mask)[0]
     pts = np.array([
-        make_screen(xs[i], ys[i], sx[i], sz[i], sy[i], theta[i])
+        make_screen(xs[i] * scale, ys[i] * scale, sx[i], sz[i], sy[i], theta[i])
         for i in aper_indices
     ])
-    # pts = np.concatenate((pts[:, 30:, :], pts[:, :11, :]), axis=1)
 
-    surface = mesh_from_polygons(pts, close=False)
-    ax.add_mesh(surface, color='g', opacity=0.3, show_edges=True)
+    surface = mesh_from_polygons(pts, close=close)
+    ax.add_mesh(surface, color='orange', edge_color='k', opacity=0.3, show_edges=True)
 
 
-def make_rectangular_screen(x_min, x_max, y_min, y_max, beam_xy, beam_z, x, y, z, theta):
+def make_rectangular_screen(x_min, x_max, y_min, y_max, x, y, z, theta, close=True):
     """Make a beam screen shape.
 
     Make a rectangle at ``(x, y, z)``, rotated around z-axis by the angle ``theta``,
@@ -206,39 +224,43 @@ def make_rectangular_screen(x_min, x_max, y_min, y_max, beam_xy, beam_z, x, y, z
     theta : float
         Angle of rotation around the z-axis.
     """
+    if not close:
+        x_max = 0
+
     points_xz = np.array([
-        (0, 0, y_min),
+        (x_max, 0, y_min),
         (x_min, 0, y_min),
         (x_min, 0, y_max),
-        (0, 0, y_max),
+        (x_max, 0, y_max),
     ])
     points_xz = Rotation.from_euler('z', theta).apply(points_xz)
     return points_xz + np.tile([x, y, z], (len(points_xz), 1))
 
 
-def plot_rectangular_apertures(ax, apertures, twiss, survey, name_from, name_until):
+def plot_rectangular_apertures(ax, apertures, survey, name_from, name_until, close=True, scale=1e3):
     sv = survey.rows[name_from:name_until]
     ap = apertures.rows[name_from:name_until]
-    tw = twiss.rows[name_from:name_until]
 
-    s, x, sigx, y, sigy, sx, sy, sz, theta = compute_beam_size(sv, tw)
+    sx = sv.X
+    sy = sv.Y
+    sz = sv.Z
+    theta = sv.theta
 
-    x_min, x_max = ap.x_aper_low, ap.x_aper_high
-    y_min, y_max = ap.y_aper_low, ap.y_aper_high
+    x_min, x_max = ap.x_aper_low * scale, ap.x_aper_high * scale
+    y_min, y_max = ap.y_aper_low * scale, ap.y_aper_high * scale
 
     pts = np.array([
-        make_rectangular_screen(x_min[i], x_max[i], y_min[i], y_max[i], x[i], y[i], sx[i], sz[i], sy[i], theta[i])
+        make_rectangular_screen(x_min[i], x_max[i], y_min[i], y_max[i], sx[i], sz[i], sy[i], theta[i], close)
         for i in range(len(x_min))
     ])
 
     # Plot the screen
-    surface = mesh_from_polygons(pts, close=False)
+    surface = mesh_from_polygons(pts, close)
     ax.add_mesh(surface, color='g', opacity=0.5, show_edges=True)
 
 
 # Plot the plot
 # =============
-
 ax = pv.Plotter()
 
 ax.add_axes(
@@ -253,7 +275,8 @@ ax.add_axes(
     zlabel='Y',
 )
 
-ax.set_scale(xscale=3e2, zscale=3e2)
+scale = 3e2
+ax.set_scale(xscale=1, zscale=1)
 ax.show_bounds(
     show_xaxis=False,
     show_yaxis=True,
@@ -269,33 +292,26 @@ title_text_prop = title.GetTextProperty()
 title_text_prop.SetFontFamily(4)
 title_text_prop.SetFontFile('/Users/szymonlopaciuk/Library/Fonts/DejaVuSans.ttf')
 
-plot_beam_size(ax, tw1, sv1, color='b', element_around='ip5', section_length=130)
-plot_beam_size(ax, tw2, sv2, color='r', element_around='ip5', section_length=130)
+plot_beam_size(ax, tw1, sv1, color='b', element_around=element_around, section_length=section_length, scale=scale)
+plot_beam_size(ax, tw2, sv2, color='r', element_around=element_around, section_length=section_length, scale=scale)
 
 # Plot beam screen
 # ================
 
 lhcb1_aper = xt.Line.from_json('lhcb1_aper.json')
-tw1 = lhcb1_aper.twiss4d()
+sv_aper = lhcb1_aper.survey()
 
-element_around = 'ip5'
-section_length = 130
-
-s_around = sv1.rows[element_around].s[0]
+s_around = sv_aper.rows[element_around].s[0]
 s_start, s_end = s_around - section_length / 2, s_around + section_length / 2
 
-name_from = tw1.rows[s_start:s_end:'s'].name[0]
-name_until = tw1.rows[s_start:s_end:'s'].name[-1]
+name_from = sv_aper.rows[s_start:s_end:'s'].name[0]
+name_until = sv_aper.rows[s_start:s_end:'s'].name[-1]
 
-_name_from = tw1.rows[s_start-100:s_end+100:'s'].name[0]
-_name_until = tw1.rows[s_start-100:s_end+100:'s'].name[-1]
+aper_section = lhcb1_aper.select(name_from, name_until)
+aper = aper_section.get_aperture_table(option='poly')
+aper_sq = aper_section.get_aperture_table(option='extent')
 
-aper = lhcb1_aper.select(_name_from, _name_until).get_aperture_table(option='poly')
-sv1 = lhcb1_aper.survey()
-
-plot_apertures(ax, aper, tw1, sv1, name_from, name_until)
-
-aper_sq = lhcb1_aper.select(_name_from, _name_until).get_aperture_table()
-# plot_rectangular_apertures(ax, aper_sq, tw1, sv1, name_from, name_until)
+plot_apertures(ax, aper, sv_aper, name_from, name_until, scale=scale)
+# plot_rectangular_apertures(ax, aper_sq, sv_aper, name_from, name_until)
 
 ax.show()
