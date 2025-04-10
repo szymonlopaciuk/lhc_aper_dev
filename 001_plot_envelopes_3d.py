@@ -9,7 +9,7 @@ env.lhcb1.particle_ref = xt.Particles(p0c=6.8e12)
 env.lhcb2.particle_ref = xt.Particles(p0c=6.8e12)
 
 env.vars.load_madx('ats_30cm.madx')
-# env['on_sep5'] = 0
+env['on_sep5'] = 0
 
 tw1 = env.lhcb1.twiss4d()
 tw2 = env.lhcb2.twiss4d(reverse=True)
@@ -76,15 +76,21 @@ def ellipse(rxy, rz, beam_xy, beam_z, x, y, z, theta):
     return points_xz + np.tile([x, y, z], (len(ts), 1))
 
 
+@np.vectorize
+def clip(x, max_val):
+    return min(max_val, max(x, -max_val))
+
+
 def mesh_from_polygons(pts, close=True):
-    num_ellipses, points_per_ellipse, _ = pts.shape
+    num_polys, points_per_poly, dim = pts.shape
+    assert dim == 3, "Points must be 3D"
     vertices = pts.reshape(-1, 3)
-    num_faces = points_per_ellipse * (num_ellipses - 1) - 1
+    num_faces = points_per_poly * (num_polys - 1) - 1
 
     faces = np.hstack([
-        [4, i, i + 1, points_per_ellipse + i + 1, points_per_ellipse + i]
+        [4, i, i + 1, points_per_poly + i + 1, points_per_poly + i]
         for i in range(num_faces)
-        if close or (i % points_per_ellipse != points_per_ellipse - 1)
+        if close or (i % points_per_poly != points_per_poly - 1)
     ])
 
     surface = pv.PolyData(vertices, faces)
@@ -119,7 +125,58 @@ def plot_beam_size(ax, twiss, survey, color, element_around, section_length):
     ax.add_mesh(spline, color=color, line_width=5)
 
 
-def make_screen(x_min, x_max, y_min, y_max, beam_xy, beam_z, x, y, z, theta):
+def make_screen(xs, ys, x, y, z, theta):
+    """Make a beam screen shape.
+
+    Make a polygon at ``(x, y, z)``, rotated around z-axis by the angle ``theta``,
+    consisting of points (xs, ys). The axes are the traditional (matplotlib) axes.
+
+    Parameters
+    ----------
+    xs : array of float
+        x-coordinates of the polygon corners.
+    ys : array of float
+        y-coordinates of the polygon corners.
+    beam_xy : float
+        Horizontal displacement of the centre before rotation, i.e. along theta.
+    beam_z : float
+        Vertical displacement of the centre before rotation.
+    x : float
+        Centre of the ellipse in x.
+    y : float
+        Centre of the ellipse in y.
+    z : float
+        Centre of the ellipse in z.
+    theta : float
+        Angle of rotation around the z-axis.
+    """
+    points_xz = np.column_stack([xs, np.zeros_like(xs), ys])
+    points_xz = Rotation.from_euler('z', theta).apply(points_xz)
+    return points_xz + np.tile([x, y, z], (len(points_xz), 1))
+
+
+def plot_apertures(ax, apertures, twiss, survey, name_from, name_until):
+    sv = survey.rows[name_from:name_until]
+    ap = apertures.rows[name_from:name_until]
+    tw = twiss.rows[name_from:name_until]
+
+    s, x, sigx, y, sigy, sx, sy, sz, theta = compute_beam_size(sv, tw)
+
+    xs, ys = ap.polygon_x_discrete, ap.polygon_y_discrete
+
+    # Broken for whatever reason
+    aper_indices = np.where(~np.isnan(xs))[0]
+    pts = np.array([
+        make_screen(xs[i], ys[i], sx[i], sz[i], sy[i], theta[i])
+        for i in aper_indices
+    ])
+    # pts = np.concatenate((pts[:, 30:, :], pts[:, :11, :]), axis=1)
+
+    surface = mesh_from_polygons(pts, close=False)
+    ax.add_mesh(surface, color='g', opacity=0.3, show_edges=True)
+
+
+def make_rectangular_screen(x_min, x_max, y_min, y_max, beam_xy, beam_z, x, y, z, theta):
     """Make a beam screen shape.
 
     Make a rectangle at ``(x, y, z)``, rotated around z-axis by the angle ``theta``,
@@ -159,7 +216,7 @@ def make_screen(x_min, x_max, y_min, y_max, beam_xy, beam_z, x, y, z, theta):
     return points_xz + np.tile([x, y, z], (len(points_xz), 1))
 
 
-def plot_apertures(ax, apertures, twiss, survey, name_from, name_until):
+def plot_rectangular_apertures(ax, apertures, twiss, survey, name_from, name_until):
     sv = survey.rows[name_from:name_until]
     ap = apertures.rows[name_from:name_until]
     tw = twiss.rows[name_from:name_until]
@@ -170,13 +227,13 @@ def plot_apertures(ax, apertures, twiss, survey, name_from, name_until):
     y_min, y_max = ap.y_aper_low, ap.y_aper_high
 
     pts = np.array([
-        make_screen(x_min[i], x_max[i], y_min[i], y_max[i], x[i], y[i], sx[i], sz[i], sy[i], theta[i])
+        make_rectangular_screen(x_min[i], x_max[i], y_min[i], y_max[i], x[i], y[i], sx[i], sz[i], sy[i], theta[i])
         for i in range(len(x_min))
     ])
 
     # Plot the screen
     surface = mesh_from_polygons(pts, close=False)
-    ax.add_mesh(surface, color='k', opacity=0.5, show_edges=True)
+    ax.add_mesh(surface, color='g', opacity=0.5, show_edges=True)
 
 
 # Plot the plot
@@ -230,9 +287,15 @@ s_start, s_end = s_around - section_length / 2, s_around + section_length / 2
 name_from = tw1.rows[s_start:s_end:'s'].name[0]
 name_until = tw1.rows[s_start:s_end:'s'].name[-1]
 
-aper = lhcb1_aper.select(name_from, name_until).get_aperture_table()
+_name_from = tw1.rows[s_start-100:s_end+100:'s'].name[0]
+_name_until = tw1.rows[s_start-100:s_end+100:'s'].name[-1]
+
+aper = lhcb1_aper.select(_name_from, _name_until).get_aperture_table(option='poly')
 sv1 = lhcb1_aper.survey()
 
 plot_apertures(ax, aper, tw1, sv1, name_from, name_until)
+
+aper_sq = lhcb1_aper.select(_name_from, _name_until).get_aperture_table()
+# plot_rectangular_apertures(ax, aper_sq, tw1, sv1, name_from, name_until)
 
 ax.show()
