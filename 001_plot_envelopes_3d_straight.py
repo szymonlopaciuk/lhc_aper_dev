@@ -287,12 +287,12 @@ ax.show_bounds(
     show_xaxis=True,
     show_yaxis=True,
     show_zaxis=True,
-    show_xlabels=False,
+    show_xlabels=True,
     show_ylabels=True,
-    show_zlabels=False,
-    xtitle='X [0.33cm]',
+    show_zlabels=True,
+    xtitle='X [1/3cm]',
     ytitle='Z [m]',
-    ztitle='Y [0.33cm]',
+    ztitle='Y [1/3cm]',
     location='outer',
 )
 title = ax.add_title(f'LHC Beam Envelopes at {element_around.upper()} (3σ, β*=30cm)')
