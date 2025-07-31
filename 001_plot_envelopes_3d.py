@@ -8,7 +8,12 @@ from scipy.spatial.transform import Rotation
 element_around = 'ip5'
 colour = 'gray'
 section_length = 140
-
+ips = {
+    'ip1': 'Atlas',
+    'ip2': 'Alice',
+    'ip5': 'CMS',
+    'ip8': 'LHCb',
+}
 
 # Prepare the lattice and plot the beam
 # =====================================
@@ -290,12 +295,13 @@ ax.show_bounds(
     show_xlabels=False,
     show_ylabels=True,
     show_zlabels=False,
-    xtitle='X [0.33cm]',
+    xtitle='X [3.3mm]',
     ytitle='Z [m]',
-    ztitle='Y [0.33cm]',
+    ztitle='Y [3.3mm]',
     location='outer',
 )
-title = ax.add_title(f'LHC Beam Envelopes at {element_around.upper()} (3σ, β*=30cm)')
+experiment = f' ({ips[element_around]})' if element_around in ips else ''
+title = ax.add_title(f'LHC Beam Envelopes at {element_around.upper()}{experiment} (3σ, β*=30cm)')
 title_text_prop = title.GetTextProperty()
 title_text_prop.SetFontFamily(4)
 title_text_prop.SetFontFile('/Users/szymonlopaciuk/Library/Fonts/DejaVuSans.ttf')

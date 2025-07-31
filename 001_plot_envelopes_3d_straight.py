@@ -5,10 +5,15 @@ from scipy.spatial.transform import Rotation
 
 # Options
 # =======
-element_around = 'ip5'
+element_around = 'ip1'
 colour = 'gray'
 section_length = 140
-
+ips = {
+    'ip1': 'Atlas',
+    'ip2': 'Alice',
+    'ip5': 'CMS',
+    'ip8': 'LHCb',
+}
 
 # Prepare the lattice and plot the beam
 # =====================================
@@ -37,6 +42,13 @@ tw2 = env.lhcb2.twiss4d(reverse=True)
 
 sv1 = env.lhcb1.survey()
 sv2 = env.lhcb2.survey().reverse()
+
+
+@np.vectorize
+def clip_large_s(s):
+    if s > env.lhcb1.get_length() / 2:
+        return s - env.lhcb1.get_length()
+    return s
 
 
 def table_wrap_around(tb, element_around, section_length):
@@ -83,7 +95,7 @@ def compute_beam_size(survey, twiss):
     return s, x, sigx, y, sigy, sx, sy, sz, theta
 
 
-def ellipse(rxy, rz, beam_xy, beam_z, x, y, z, theta):
+def ellipse(rxy, rz, beam_xy, beam_z, x, y, z, theta, s):
     """Make a 3D ellipse.
 
     Make a 3D ellipse centred at ``(x, y, z)``, with radii ``rx`` and ``rz``, and
@@ -113,8 +125,14 @@ def ellipse(rxy, rz, beam_xy, beam_z, x, y, z, theta):
     points_xz = np.array([
         (rxy * np.cos(t) + beam_xy, 0, rz * np.sin(t) + beam_z) for t in ts]
     )
-    points_xz = Rotation.from_euler('z', theta).apply(points_xz)
-    return points_xz + np.tile([x, y, z], (len(ts), 1))
+    # points_xz = Rotation.from_euler('z', theta).apply(points_xz)
+
+    # centre = [x, y, z]
+    # centre = Rotation.from_euler('z', theta).apply(centre)
+    # centre[0] += s
+    centre = [0, clip_large_s(s), 0]
+
+    return points_xz + np.tile(centre, (len(ts), 1))
 
 
 def mesh_from_polygons(pts, close=True):
@@ -138,7 +156,7 @@ def plot_beam_size(ax, twiss, survey, color, scale=1e3):
     min_len = min(len(x), len(theta))  # these can be off by one due to numerical precision??
 
     pts = np.array([
-        ellipse(sigx[i] * scale, sigy[i] * scale, x[i] * scale, y[i] * scale, sx[i], sz[i], sy[i], -theta[i])
+        ellipse(sigx[i] * scale, sigy[i] * scale, x[i] * scale, y[i] * scale, sx[i], sz[i], sy[i], -theta[i], s[i])
         for i in range(min_len)
     ])
 
@@ -147,16 +165,18 @@ def plot_beam_size(ax, twiss, survey, color, scale=1e3):
     ax.add_mesh(surface, color=color, opacity=0.5, show_edges=True)
 
     # Plot the closed orbit
-    center = np.column_stack([
-        sx[:min_len] + np.cos(-theta[:min_len]) * x[:min_len] * scale,
-        sz[:min_len] + np.sin(-theta[:min_len]) * x[:min_len] * scale,
-        sy[:min_len] + y[:min_len] * scale,
-    ])
+    center = np.column_stack(
+        [
+            x[:min_len] * scale,
+            clip_large_s(s),
+            y[:min_len] * scale,
+        ]
+    )
     spline = pv.Spline(center)
     ax.add_mesh(spline, color=color, line_width=5)
 
 
-def make_screen(xs, ys, x, y, z, theta):
+def make_screen(xs, ys, x, y, z, theta, s):
     """Make a beam screen shape.
 
     Make a polygon at ``(x, y, z)``, rotated around z-axis by the angle ``theta``,
@@ -168,10 +188,6 @@ def make_screen(xs, ys, x, y, z, theta):
         x-coordinates of the polygon corners.
     ys : array of float
         y-coordinates of the polygon corners.
-    beam_xy : float
-        Horizontal displacement of the centre before rotation, i.e. along theta.
-    beam_z : float
-        Vertical displacement of the centre before rotation.
     x : float
         Centre of the ellipse in x.
     y : float
@@ -182,21 +198,27 @@ def make_screen(xs, ys, x, y, z, theta):
         Angle of rotation around the z-axis.
     """
     points_xz = np.column_stack([xs, np.zeros_like(xs), ys])
-    points_xz = Rotation.from_euler('z', -theta).apply(points_xz)
-    return points_xz + np.tile([x, y, z], (len(points_xz), 1))
+    #points_xz = Rotation.from_euler('z', -theta).apply(points_xz)
+
+    # centre = [x, y, z]
+    # centre = Rotation.from_euler('z', theta).apply(centre)
+    centre = [0, clip_large_s(s), 0]
+
+    return points_xz + np.tile(centre, (len(points_xz), 1))
 
 
 def plot_apertures(ax, aperture, survey, close=True, scale=1e3):
     sx = survey.X
     sy = survey.Y
     sz = survey.Z
+    s = survey.s
     theta = survey.theta
 
     xs, ys = aperture.polygon_x_discrete, aperture.polygon_y_discrete
 
     aper_indices = np.where(aperture.aperture_mask)[0]
     pts = np.array([
-        make_screen(xs[i] * scale, ys[i] * scale, sx[i], sz[i], sy[i], theta[i])
+        make_screen(xs[i] * scale, ys[i] * scale, sx[i], sz[i], sy[i], theta[i], s[i])
         for i in aper_indices
     ])
 
@@ -281,8 +303,12 @@ ax.add_axes(
     ylabel='Z',
     zlabel='Y',
 )
-
-scale = 3e2
+ax.set_scale(
+    xscale=3,
+    yscale=1,
+    zscale=3,
+)
+scale = 100
 ax.show_bounds(
     show_xaxis=True,
     show_yaxis=True,
@@ -290,12 +316,13 @@ ax.show_bounds(
     show_xlabels=True,
     show_ylabels=True,
     show_zlabels=True,
-    xtitle='X [1/3cm]',
+    xtitle='X [mm]',
     ytitle='Z [m]',
-    ztitle='Y [1/3cm]',
+    ztitle='Y [mm]',
     location='outer',
 )
-title = ax.add_title(f'LHC Beam Envelopes at {element_around.upper()} (3σ, β*=30cm)')
+experiment = f' ({ips[element_around]})' if element_around in ips else ''
+title = ax.add_title(f'LHC Beam Envelopes at {element_around.upper()}{experiment} (3σ, β*=30cm)')
 title_text_prop = title.GetTextProperty()
 title_text_prop.SetFontFamily(4)
 title_text_prop.SetFontFile('/Users/szymonlopaciuk/Library/Fonts/DejaVuSans.ttf')
